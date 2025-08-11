@@ -1,0 +1,149 @@
+library(dplyr)
+library(readr)     # parse_number
+library(forcats)   # fct_reorder
+library(scales)    # label_comma, percent_format 等
+library(stringr)
+
+
+path_cleaned <- "~/Desktop/ra-bootcamp-warmup/task_1/data/cleaned"
+
+panel <- readRDS(file.path(path_cleaned, "panel_middle_school_absence.rds"))
+students_cleaned <- readRDS(file.path(path_cleaned, "students_cleaned.rds"))
+absence_cleaned  <- readRDS(file.path(path_cleaned, "absence_cleaned.rds"))
+
+# 列名の想定：
+# - year (整数, 西暦)
+# - prefecture (文字列, 都道府県名)
+# - students_total (数値)
+# - absence_total (数値)
+# - absence_rate (比率: 0~1)
+# - absence_rate_pct (百分率: 0~100)
+
+# 念のため型を確認・そろえる
+panel <- panel %>%
+  mutate(
+    year = as.integer(year),
+    prefecture = as.character(prefecture),
+    students_total = as.numeric(students_total),
+    absence_total  = as.numeric(absence_total),
+    absence_rate   = as.numeric(absence_rate),
+    absence_rate_pct = as.numeric(absence_rate_pct)
+  )
+
+# 合計不登校者数の推移、表と棒グラフ（図1）
+ts_total <- panel %>%
+  group_by(year) %>%
+  summarise(
+    total_absence = sum(absence_total, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+ggplot(ts_total, aes(x = year, y = total_absence)) +
+  geom_col() +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    title = "図1：合計不登校者数の推移",
+    x = "年度",
+    y = "不登校者数（合計）"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 不登校割合の推移、折れ線グラフ、各年の上に小数第2位で四捨五入した数値を記入（図2）
+ts_rate <- panel %>%
+  group_by(year) %>%
+  summarise(
+    total_absence  = sum(absence_total, na.rm = TRUE),
+    total_students = sum(students_total, na.rm = TRUE),
+    rate_pct = ifelse(total_students > 0, total_absence / total_students * 100, NA_real_)
+  ) %>%
+  ungroup() %>%
+  mutate(label = round(rate_pct, 2))  # 小数第2位で四捨五入
+  
+ggplot(ts_rate, aes(x = year, y = rate_pct)) +
+  geom_line() +
+  geom_point() +
+  geom_text(aes(label = label), vjust = -0.6, size = 3) +
+  labs(
+    title = "図2：全国の不登校割合の推移",
+    x = "年度",
+    y = "不登校割合（%）"
+  ) +
+  theme_minimal(base_size = 12)
+
+# 合計不登校者数と不登校割合を重ねたグラフ、合計は棒グラフで左軸、推移は折れ線グラフで右軸（図3）
+# スケーリング係数（左軸の最大値 / 右軸の最大値）
+coef <- max(ts_total$total_absence, na.rm = TRUE) / max(ts_rate$rate_pct, na.rm = TRUE)
+
+ggplot() +
+  # 左軸：不登校者数（棒）
+  geom_col(data = ts_total, aes(x = year, y = total_absence), alpha = 0.8) +
+  # 右軸：不登校割合（折れ線）→ 左軸スケールに合わせて * coef
+  geom_line(
+    data = ts_rate,
+    aes(x = year, y = rate_pct * coef),
+    linewidth = 1
+  ) +
+  geom_point(
+    data = ts_rate,
+    aes(x = year, y = rate_pct * coef)
+  ) +
+  scale_y_continuous(
+    name = "不登校者数（合計）",
+    labels = label_comma(),
+    sec.axis = sec_axis(~ . / coef, name = "不登校割合（%）")
+  ) +
+  labs(
+    title = "図3：合計不登校者数と不登校割合の推移（2軸）",
+    x = "年度"
+  ) +
+  theme_minimal(base_size = 12)
+
+
+# 2022 年度のデータに絞って不登校割合のヒストグラム、平均値に破線を引く（図4）
+year_target <- 2022
+df_2022 <- panel %>%
+  filter(year == year_target) %>%
+  mutate(rate_pct = ifelse(students_total > 0,
+                           absence_total / students_total * 100, NA_real_))
+
+mean_2022 <- mean(df_2022$rate_pct, na.rm = TRUE)
+
+ggplot(df_2022, aes(x = rate_pct)) +
+  geom_histogram(binwidth = 0.2, boundary = 0, closed = "left") +
+  geom_vline(xintercept = mean_2022, linetype = "dashed") +
+  labs(
+    title = paste0("図4：", year_target, "年度 不登校割合の分布（都道府県別）"),
+    x = "不登校割合（%）",
+    y = "都道府県数"
+  ) +
+  annotate("text", x = mean_2022, y = Inf, vjust = 1.5,
+           label = paste0("平均=", round(mean_2022, 2), "%")) +
+  theme_minimal(base_size = 12)
+
+# 2022 年度の不登校率が高い順に都道府県を並べて縦棒グラフ、皆さんが実際に行ったことがある都道府県から一番楽しかった場所を1つ選んでピンクに、それ以外をグレーで配色（図5）
+favorite_pref <- c("東京","千葉","埼玉","石川","栃木","群馬",
+                   "京都","大阪","奈良","愛知","静岡","福島",
+                   "青森","秋田","岩手","山形","新潟")
+
+df_2022 <- panel %>%
+  filter(year == 2022) %>%
+  mutate(
+    rate_pct = if_else(students_total > 0, absence_total / students_total * 100, NA_real_),
+    prefecture = str_trim(as.character(prefecture)),
+    highlight  = if_else(prefecture %in% favorite_pref, "fav", "other")
+  ) %>%
+  mutate(prefecture = fct_reorder(prefecture, rate_pct, .desc = TRUE))
+
+ggplot(df_2022, aes(x = prefecture, y = rate_pct, fill = highlight)) +  # ← ここ大事
+  geom_col() +
+  scale_fill_manual(values = c(fav = "hotpink", other = "grey70"), guide = "none") +
+  coord_flip() +
+  labs(
+    title = "図5：2022年度 不登校割合（高い順）",
+    x = "都道府県（高い順）",
+    y = "不登校割合（%）"
+  )
+
+
+#（任意）Rmd ファイルをKnit し、html ファイルに出力する
+
